@@ -9,16 +9,16 @@ set -o pipefail
 ##
 
 # Envoy start-up command
-ENVOY=${ENVOY:-/usr/local/bin/envoy}
+# ENVOY=${ENVOY:-/usr/local/bin/envoy}
 
 # Start envoy: important to keep drain time short
-(${ENVOY} -c sample/bootstrap-xds.yaml --drain-time-s 1 -l debug)&
-ENVOY_PID=$!
+# (${ENVOY} -c sample/bootstrap-xds.yaml --drain-time-s 1 -l debug)&
+# ENVOY_PID=$!
 
-function cleanup() {
-  kill ${ENVOY_PID}
-}
-trap cleanup EXIT
+#function cleanup() {
+#  kill ${ENVOY_PID}
+#}
+#trap cleanup EXIT
 
 # Run the control plane
 bin/example -debug $@

@@ -34,10 +34,10 @@ var (
 func init() {
 	l = example.Logger{}
 
-	flag.BoolVar(&l.Debug, "debug", false, "Enable xDS server debug logging")
+	flag.BoolVar(&l.Debug, "debug", true, "Enable xDS server debug logging")
 
 	// The port that this xDS server listens on
-	flag.UintVar(&port, "port", 18000, "xDS management server port")
+	flag.UintVar(&port, "port", 10901, "xDS management server port")
 
 	// Tell Envoy to use this Node ID
 	flag.StringVar(&nodeID, "nodeID", "test-id", "Node ID")

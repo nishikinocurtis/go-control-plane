@@ -15,6 +15,10 @@
 package example
 
 import (
+	v3 "github.com/cncf/xds/go/xds/core/v3"
+	v32 "github.com/cncf/xds/go/xds/type/matcher/v3"
+	udp_proxyv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/udp/udp_proxy/v3"
+	networkv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/matching/common_inputs/network/v3"
 	"time"
 
 	"google.golang.org/protobuf/types/known/anypb"
@@ -34,19 +38,19 @@ import (
 )
 
 const (
-	ClusterName  = "example_proxy_cluster"
+	ClusterName  = "udp_cluster"
 	RouteName    = "local_route"
-	ListenerName = "listener_0"
-	ListenerPort = 10000
-	UpstreamHost = "www.envoyproxy.io"
-	UpstreamPort = 80
+	ListenerName = "listener_1"
+	ListenerPort = 10980
+	UpstreamHost = "127.0.0.1"
+	UpstreamPort = 10990
 )
 
 func makeCluster(clusterName string) *cluster.Cluster {
 	return &cluster.Cluster{
 		Name:                 clusterName,
 		ConnectTimeout:       durationpb.New(5 * time.Second),
-		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_LOGICAL_DNS},
+		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STATIC},
 		LbPolicy:             cluster.Cluster_ROUND_ROBIN,
 		LoadAssignment:       makeEndpoint(clusterName),
 		DnsLookupFamily:      cluster.Cluster_V4_ONLY,
@@ -63,7 +67,7 @@ func makeEndpoint(clusterName string) *endpoint.ClusterLoadAssignment {
 						Address: &core.Address{
 							Address: &core.Address_SocketAddress{
 								SocketAddress: &core.SocketAddress{
-									Protocol: core.SocketAddress_TCP,
+									Protocol: core.SocketAddress_UDP,
 									Address:  UpstreamHost,
 									PortSpecifier: &core.SocketAddress_PortValue{
 										PortValue: UpstreamPort,
@@ -169,12 +173,87 @@ func makeConfigSource() *core.ConfigSource {
 	return source
 }
 
+func makeUDPListener(listenerName string) *listener.Listener {
+	sourceIPInput, err := anypb.New(&networkv3.SourceIPInput{})
+	if err != nil {
+		panic(err)
+	}
+	routeAction, err := anypb.New(&udp_proxyv3.Route{Cluster: ClusterName})
+	if err != nil {
+		panic(err)
+	}
+	udpProxyAny, err := anypb.New(&udp_proxyv3.UdpProxyConfig{
+		StatPrefix: "service",
+		RouteSpecifier: &udp_proxyv3.UdpProxyConfig_Matcher{
+			Matcher: &v32.Matcher{
+				MatcherType: &v32.Matcher_MatcherList_{
+					MatcherList: &v32.Matcher_MatcherList{
+						Matchers: []*v32.Matcher_MatcherList_FieldMatcher{
+							{
+								Predicate: &v32.Matcher_MatcherList_Predicate{
+									MatchType: &v32.Matcher_MatcherList_Predicate_SinglePredicate_{
+										SinglePredicate: &v32.Matcher_MatcherList_Predicate_SinglePredicate{
+											Input: &v3.TypedExtensionConfig{
+												Name:        "envoy.matching.inputs.source_ip",
+												TypedConfig: sourceIPInput,
+											},
+											Matcher: &v32.Matcher_MatcherList_Predicate_SinglePredicate_ValueMatch{
+												ValueMatch: &v32.StringMatcher{
+													MatchPattern: &v32.StringMatcher_Exact{
+														Exact: "127.0.0.1",
+													},
+												},
+											},
+										},
+									},
+								},
+								OnMatch: &v32.Matcher_OnMatch{
+									OnMatch: &v32.Matcher_OnMatch_Action{
+										Action: &v3.TypedExtensionConfig{
+											Name:        "envoy.extensions.filters.udp.udp_proxy.v3.Route",
+											TypedConfig: routeAction,
+										},
+									},
+								},
+							},
+						}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &listener.Listener{
+		Name: listenerName,
+		Address: &core.Address{
+			Address: &core.Address_SocketAddress{
+				SocketAddress: &core.SocketAddress{
+					Protocol: core.SocketAddress_UDP,
+					Address:  "0.0.0.0",
+					PortSpecifier: &core.SocketAddress_PortValue{
+						PortValue: ListenerPort,
+					},
+				},
+			},
+		},
+		ListenerFilters: []*listener.ListenerFilter{
+			&listener.ListenerFilter{
+				Name: "envoy.filters.udp_listener.udp_proxy",
+				ConfigType: &listener.ListenerFilter_TypedConfig{
+					TypedConfig: udpProxyAny,
+				},
+			},
+		},
+	}
+}
+
 func GenerateSnapshot() *cache.Snapshot {
 	snap, _ := cache.NewSnapshot("1",
 		map[resource.Type][]types.Resource{
-			resource.ClusterType:  {makeCluster(ClusterName)},
-			resource.RouteType:    {makeRoute(RouteName, ClusterName)},
-			resource.ListenerType: {makeHTTPListener(ListenerName, RouteName)},
+			resource.ClusterType: {makeCluster(ClusterName)},
+			// resource.RouteType:    {makeRoute(RouteName, ClusterName)},
+			resource.ListenerType: {makeUDPListener(ListenerName)},
 		},
 	)
 	return snap
