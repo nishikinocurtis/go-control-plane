@@ -53,6 +53,8 @@ const (
 	HTTPGRPCStats = "envoy.filters.http.grpc_stats"
 	// HTTP WASM filter
 	HTTPWasm = "envoy.extensions.filters.http.wasm.v3.Wasm"
+	// StatesReplication HTTP filter
+	StatesReplication = "envoy.extensions.filters.http.StatesReplication"
 )
 
 // Network filter names

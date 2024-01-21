@@ -19,6 +19,7 @@ import (
 	v32 "github.com/cncf/xds/go/xds/type/matcher/v3"
 	udp_proxyv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/udp/udp_proxy/v3"
 	networkv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/matching/common_inputs/network/v3"
+	any1 "github.com/golang/protobuf/ptypes/any"
 	"time"
 
 	"google.golang.org/protobuf/types/known/anypb"
@@ -38,26 +39,43 @@ import (
 )
 
 const (
-	ClusterName  = "udp_cluster"
+	ClusterName  = "svc-a"
 	RouteName    = "local_route"
 	ListenerName = "listener_1"
 	ListenerPort = 10980
-	UpstreamHost = "127.0.0.1"
-	UpstreamPort = 10990
+	UpstreamHost = "10.214.96.108"
+	UpstreamPort = 10730
 )
 
 func makeCluster(clusterName string) *cluster.Cluster {
 	return &cluster.Cluster{
 		Name:                 clusterName,
 		ConnectTimeout:       durationpb.New(5 * time.Second),
-		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STATIC},
+		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_EDS},
 		LbPolicy:             cluster.Cluster_ROUND_ROBIN,
-		LoadAssignment:       makeEndpoint(clusterName),
-		DnsLookupFamily:      cluster.Cluster_V4_ONLY,
+		//LoadAssignment:       makeEndpoint(clusterName),
+		DnsLookupFamily: cluster.Cluster_V4_ONLY,
+		EdsClusterConfig: &cluster.Cluster_EdsClusterConfig{
+			EdsConfig: &core.ConfigSource{
+				ConfigSourceSpecifier: &core.ConfigSource_Ads{
+					//	ApiConfigSource: &core.ApiConfigSource{
+					//		ApiType: core.ApiConfigSource_GRPC,
+					//		GrpcServices: []*core.GrpcService{{
+					//			TargetSpecifier: &core.GrpcService_EnvoyGrpc_{
+					//				EnvoyGrpc: &core.GrpcService_EnvoyGrpc{ClusterName: "xds_cluster"},
+					//			},
+					//		}},
+					//		TransportApiVersion: core.ApiVersion_V3,
+					//	},
+				},
+				InitialFetchTimeout: &durationpb.Duration{Seconds: 10},
+			},
+			ServiceName: clusterName,
+		},
 	}
 }
 
-func makeEndpoint(clusterName string) *endpoint.ClusterLoadAssignment {
+func makeEndpoint(clusterName string, upHost string, upPort uint32) *endpoint.ClusterLoadAssignment {
 	return &endpoint.ClusterLoadAssignment{
 		ClusterName: clusterName,
 		Endpoints: []*endpoint.LocalityLbEndpoints{{
@@ -67,10 +85,10 @@ func makeEndpoint(clusterName string) *endpoint.ClusterLoadAssignment {
 						Address: &core.Address{
 							Address: &core.Address_SocketAddress{
 								SocketAddress: &core.SocketAddress{
-									Protocol: core.SocketAddress_UDP,
-									Address:  UpstreamHost,
+									Protocol: core.SocketAddress_TCP,
+									Address:  upHost,
 									PortSpecifier: &core.SocketAddress_PortValue{
-										PortValue: UpstreamPort,
+										PortValue: upPort,
 									},
 								},
 							},
@@ -109,22 +127,64 @@ func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
 	}
 }
 
-func makeHTTPListener(listenerName string, route string) *listener.Listener {
+func makeHTTPListener(listenerName string, routeClusterA string, routeClusterB string, listenPort uint32) *listener.Listener {
 	routerConfig, _ := anypb.New(&router.Router{})
 	// HTTP filter configuration
+	stateConfig := &any1.Any{TypeUrl: "type.googleapis.com/envoy.extensions.filters.http.states_replication.v3.StatesReplication"}
 	manager := &hcm.HttpConnectionManager{
 		CodecType:  hcm.HttpConnectionManager_AUTO,
-		StatPrefix: "http",
-		RouteSpecifier: &hcm.HttpConnectionManager_Rds{
-			Rds: &hcm.Rds{
-				ConfigSource:    makeConfigSource(),
-				RouteConfigName: route,
+		StatPrefix: "ingress_http",
+		RouteSpecifier: &hcm.HttpConnectionManager_RouteConfig{
+			RouteConfig: &route.RouteConfiguration{
+				Name: "local_route",
+				VirtualHosts: []*route.VirtualHost{
+					{
+						Name:    "local_service",
+						Domains: []string{"*"},
+						Routes: []*route.Route{
+							{
+								Match: &route.RouteMatch{
+									PathSpecifier: &route.RouteMatch_Prefix{
+										Prefix: "/svc-a",
+									},
+								},
+								Action: &route.Route_Route{
+									Route: &route.RouteAction{
+										ClusterSpecifier: &route.RouteAction_Cluster{
+											Cluster: routeClusterA,
+										},
+									},
+								},
+							},
+							{
+								Match: &route.RouteMatch{
+									PathSpecifier: &route.RouteMatch_Prefix{
+										Prefix: "/svc-b",
+									},
+								},
+								Action: &route.Route_Route{
+									Route: &route.RouteAction{
+										ClusterSpecifier: &route.RouteAction_Cluster{
+											Cluster: routeClusterB,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
-		HttpFilters: []*hcm.HttpFilter{{
-			Name:       wellknown.Router,
-			ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: routerConfig},
-		}},
+		HttpFilters: []*hcm.HttpFilter{
+			{
+				Name:       wellknown.StatesReplication,
+				ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: stateConfig},
+			},
+			{
+				Name:       wellknown.Router,
+				ConfigType: &hcm.HttpFilter_TypedConfig{TypedConfig: routerConfig},
+			},
+		},
 	}
 	pbst, err := anypb.New(manager)
 	if err != nil {
@@ -139,7 +199,7 @@ func makeHTTPListener(listenerName string, route string) *listener.Listener {
 					Protocol: core.SocketAddress_TCP,
 					Address:  "0.0.0.0",
 					PortSpecifier: &core.SocketAddress_PortValue{
-						PortValue: ListenerPort,
+						PortValue: listenPort,
 					},
 				},
 			},
@@ -183,7 +243,8 @@ func makeUDPListener(listenerName string) *listener.Listener {
 		panic(err)
 	}
 	udpProxyAny, err := anypb.New(&udp_proxyv3.UdpProxyConfig{
-		StatPrefix: "service",
+		StatPrefix:                "service",
+		UsePerPacketLoadBalancing: true,
 		RouteSpecifier: &udp_proxyv3.UdpProxyConfig_Matcher{
 			Matcher: &v32.Matcher{
 				MatcherType: &v32.Matcher_MatcherList_{
@@ -251,9 +312,22 @@ func makeUDPListener(listenerName string) *listener.Listener {
 func GenerateSnapshot() *cache.Snapshot {
 	snap, _ := cache.NewSnapshot("1",
 		map[resource.Type][]types.Resource{
-			resource.ClusterType: {makeCluster(ClusterName)},
+			resource.ClusterType: {
+				makeCluster("svc-a-110"), makeCluster("svc-a-108"), makeCluster("svc-a-107"),
+				makeCluster("svc-b-107"), makeCluster("svc-b-110"), makeCluster("svc-b-108")},
 			// resource.RouteType:    {makeRoute(RouteName, ClusterName)},
-			resource.ListenerType: {makeUDPListener(ListenerName)},
+			resource.ListenerType: {
+				makeHTTPListener("listener-110", "svc-a-110", "svc-b-110", 10729),
+				makeHTTPListener("listener-108", "svc-a-108", "svc-b-108", 10728),
+				makeHTTPListener("listener-107", "svc-a-107", "svc-b-107", 10727)},
+			resource.EndpointType: {
+				makeEndpoint("svc-a-110", "127.0.0.1", 10730),
+				makeEndpoint("svc-a-108", "10.214.96.110", 10729),
+				makeEndpoint("svc-a-107", "10.214.96.110", 10729),
+				makeEndpoint("svc-b-110", "10.214.96.108", 10728),
+				makeEndpoint("svc-b-108", "127.0.0.1", 20730),
+				makeEndpoint("svc-b-107", "10.214.96.108", 10728),
+			},
 		},
 	)
 	return snap

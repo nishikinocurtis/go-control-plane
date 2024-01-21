@@ -40,7 +40,7 @@ func init() {
 	flag.UintVar(&port, "port", 10901, "xDS management server port")
 
 	// Tell Envoy to use this Node ID
-	flag.StringVar(&nodeID, "nodeID", "test-id", "Node ID")
+	flag.StringVar(&nodeID, "nodeID", "proxy-110", "Node ID")
 }
 
 func main() {
@@ -59,6 +59,14 @@ func main() {
 
 	// Add the snapshot to the cache
 	if err := cache.SetSnapshot(context.Background(), nodeID, snapshot); err != nil {
+		l.Errorf("snapshot error %q for %+v", err, snapshot)
+		os.Exit(1)
+	}
+	if err := cache.SetSnapshot(context.Background(), "proxy-108", snapshot); err != nil {
+		l.Errorf("snapshot error %q for %+v", err, snapshot)
+		os.Exit(1)
+	}
+	if err := cache.SetSnapshot(context.Background(), "proxy-107", snapshot); err != nil {
 		l.Errorf("snapshot error %q for %+v", err, snapshot)
 		os.Exit(1)
 	}
