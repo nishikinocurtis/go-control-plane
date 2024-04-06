@@ -127,7 +127,7 @@ func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
 	}
 }
 
-func makeHTTPListener(listenerName string, routeClusterA string, routeClusterB string, listenPort uint32) *listener.Listener {
+func makeHTTPListener(listenerName string, routeClusterA string, routeClusterB string, routeClusterDB string, rewritePrefix string, listenPort uint32) *listener.Listener {
 	routerConfig, _ := anypb.New(&router.Router{})
 	// HTTP filter configuration
 	stateConfig := &any1.Any{TypeUrl: "type.googleapis.com/envoy.extensions.filters.http.states_replication.v3.StatesReplication"}
@@ -167,6 +167,19 @@ func makeHTTPListener(listenerName string, routeClusterA string, routeClusterB s
 										ClusterSpecifier: &route.RouteAction_Cluster{
 											Cluster: routeClusterB,
 										},
+									},
+								},
+							},
+							{
+								Match: &route.RouteMatch{
+									PathSpecifier: &route.RouteMatch_Prefix{Prefix: "/db"},
+								},
+								Action: &route.Route_Route{
+									Route: &route.RouteAction{
+										ClusterSpecifier: &route.RouteAction_Cluster{
+											Cluster: routeClusterDB,
+										},
+										PrefixRewrite: rewritePrefix,
 									},
 								},
 							},
@@ -314,12 +327,13 @@ func GenerateSnapshot() *cache.Snapshot {
 		map[resource.Type][]types.Resource{
 			resource.ClusterType: {
 				makeCluster("svc-a-110"), makeCluster("svc-a-108"), makeCluster("svc-a-107"),
-				makeCluster("svc-b-107"), makeCluster("svc-b-110"), makeCluster("svc-b-108")},
+				makeCluster("svc-b-107"), makeCluster("svc-b-110"), makeCluster("svc-b-108"),
+				makeCluster("db-110"), makeCluster("db-108"), makeCluster("db-107")},
 			// resource.RouteType:    {makeRoute(RouteName, ClusterName)},
 			resource.ListenerType: {
-				makeHTTPListener("listener-110", "svc-a-110", "svc-b-110", 10729),
-				makeHTTPListener("listener-108", "svc-a-108", "svc-b-108", 10728),
-				makeHTTPListener("listener-107", "svc-a-107", "svc-b-107", 10727)},
+				makeHTTPListener("listener-110", "svc-a-110", "svc-b-110", "db-110", "/db", 10729),
+				makeHTTPListener("listener-108", "svc-a-108", "svc-b-108", "db-108", "/", 10728),
+				makeHTTPListener("listener-107", "svc-a-107", "svc-b-107", "db-107", "/db", 10727)},
 			resource.EndpointType: {
 				makeEndpoint("svc-a-110", "127.0.0.1", 10730),
 				makeEndpoint("svc-a-108", "10.214.96.110", 10729),
@@ -327,6 +341,9 @@ func GenerateSnapshot() *cache.Snapshot {
 				makeEndpoint("svc-b-110", "10.214.96.108", 10728),
 				makeEndpoint("svc-b-108", "127.0.0.1", 20730),
 				makeEndpoint("svc-b-107", "10.214.96.108", 10728),
+				makeEndpoint("db-108", "127.0.0.1", 8000),
+				makeEndpoint("db-110", "10.214.96.108", 10728),
+				makeEndpoint("db-107", "10.214.96.108", 10728),
 			},
 		},
 	)
