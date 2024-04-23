@@ -18,7 +18,6 @@ import (
 	v3 "github.com/cncf/xds/go/xds/core/v3"
 	v32 "github.com/cncf/xds/go/xds/type/matcher/v3"
 	udp_proxyv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/udp/udp_proxy/v3"
-	networkv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/matching/common_inputs/network/v3"
 	any1 "github.com/golang/protobuf/ptypes/any"
 	"time"
 
@@ -75,7 +74,7 @@ func makeCluster(clusterName string) *cluster.Cluster {
 	}
 }
 
-func makeEndpoint(clusterName string, upHost string, upPort uint32) *endpoint.ClusterLoadAssignment {
+func makeEndpoint(clusterName string, upHost string, upPort uint32, protocol core.SocketAddress_Protocol) *endpoint.ClusterLoadAssignment {
 	return &endpoint.ClusterLoadAssignment{
 		ClusterName: clusterName,
 		Endpoints: []*endpoint.LocalityLbEndpoints{{
@@ -85,7 +84,7 @@ func makeEndpoint(clusterName string, upHost string, upPort uint32) *endpoint.Cl
 						Address: &core.Address{
 							Address: &core.Address_SocketAddress{
 								SocketAddress: &core.SocketAddress{
-									Protocol: core.SocketAddress_TCP,
+									Protocol: protocol,
 									Address:  upHost,
 									PortSpecifier: &core.SocketAddress_PortValue{
 										PortValue: upPort,
@@ -127,7 +126,7 @@ func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
 	}
 }
 
-func makeHTTPListener(listenerName string, routeClusterA string, routeClusterB string, routeClusterDB string, rewritePrefix string, listenPort uint32) *listener.Listener {
+func makeHTTPListener(listenerName string, routeClusterA string, listenPort uint32) *listener.Listener {
 	routerConfig, _ := anypb.New(&router.Router{})
 	// HTTP filter configuration
 	stateConfig := &any1.Any{TypeUrl: "type.googleapis.com/envoy.extensions.filters.http.states_replication.v3.StatesReplication"}
@@ -145,7 +144,7 @@ func makeHTTPListener(listenerName string, routeClusterA string, routeClusterB s
 							{
 								Match: &route.RouteMatch{
 									PathSpecifier: &route.RouteMatch_Prefix{
-										Prefix: "/svc-a",
+										Prefix: "/colibri/v2/conference",
 									},
 								},
 								Action: &route.Route_Route{
@@ -153,33 +152,6 @@ func makeHTTPListener(listenerName string, routeClusterA string, routeClusterB s
 										ClusterSpecifier: &route.RouteAction_Cluster{
 											Cluster: routeClusterA,
 										},
-									},
-								},
-							},
-							{
-								Match: &route.RouteMatch{
-									PathSpecifier: &route.RouteMatch_Prefix{
-										Prefix: "/svc-b",
-									},
-								},
-								Action: &route.Route_Route{
-									Route: &route.RouteAction{
-										ClusterSpecifier: &route.RouteAction_Cluster{
-											Cluster: routeClusterB,
-										},
-									},
-								},
-							},
-							{
-								Match: &route.RouteMatch{
-									PathSpecifier: &route.RouteMatch_Prefix{Prefix: "/db"},
-								},
-								Action: &route.Route_Route{
-									Route: &route.RouteAction{
-										ClusterSpecifier: &route.RouteAction_Cluster{
-											Cluster: routeClusterDB,
-										},
-										PrefixRewrite: rewritePrefix,
 									},
 								},
 							},
@@ -246,12 +218,8 @@ func makeConfigSource() *core.ConfigSource {
 	return source
 }
 
-func makeUDPListener(listenerName string) *listener.Listener {
-	sourceIPInput, err := anypb.New(&networkv3.SourceIPInput{})
-	if err != nil {
-		panic(err)
-	}
-	routeAction, err := anypb.New(&udp_proxyv3.Route{Cluster: ClusterName})
+func makeUDPListener(listenerName string, udpClusterName string, udpListenerPort uint32) *listener.Listener {
+	routeAction, err := anypb.New(&udp_proxyv3.Route{Cluster: udpClusterName})
 	if err != nil {
 		panic(err)
 	}
@@ -260,37 +228,13 @@ func makeUDPListener(listenerName string) *listener.Listener {
 		UsePerPacketLoadBalancing: true,
 		RouteSpecifier: &udp_proxyv3.UdpProxyConfig_Matcher{
 			Matcher: &v32.Matcher{
-				MatcherType: &v32.Matcher_MatcherList_{
-					MatcherList: &v32.Matcher_MatcherList{
-						Matchers: []*v32.Matcher_MatcherList_FieldMatcher{
-							{
-								Predicate: &v32.Matcher_MatcherList_Predicate{
-									MatchType: &v32.Matcher_MatcherList_Predicate_SinglePredicate_{
-										SinglePredicate: &v32.Matcher_MatcherList_Predicate_SinglePredicate{
-											Input: &v3.TypedExtensionConfig{
-												Name:        "envoy.matching.inputs.source_ip",
-												TypedConfig: sourceIPInput,
-											},
-											Matcher: &v32.Matcher_MatcherList_Predicate_SinglePredicate_ValueMatch{
-												ValueMatch: &v32.StringMatcher{
-													MatchPattern: &v32.StringMatcher_Exact{
-														Exact: "127.0.0.1",
-													},
-												},
-											},
-										},
-									},
-								},
-								OnMatch: &v32.Matcher_OnMatch{
-									OnMatch: &v32.Matcher_OnMatch_Action{
-										Action: &v3.TypedExtensionConfig{
-											Name:        "envoy.extensions.filters.udp.udp_proxy.v3.Route",
-											TypedConfig: routeAction,
-										},
-									},
-								},
-							},
-						}},
+				OnNoMatch: &v32.Matcher_OnMatch{
+					OnMatch: &v32.Matcher_OnMatch_Action{
+						Action: &v3.TypedExtensionConfig{
+							Name:        "envoy.extensions.filters.udp.udp_proxy.v3.Route",
+							TypedConfig: routeAction,
+						},
+					},
 				},
 			},
 		},
@@ -306,7 +250,7 @@ func makeUDPListener(listenerName string) *listener.Listener {
 					Protocol: core.SocketAddress_UDP,
 					Address:  "0.0.0.0",
 					PortSpecifier: &core.SocketAddress_PortValue{
-						PortValue: ListenerPort,
+						PortValue: udpListenerPort,
 					},
 				},
 			},
@@ -326,24 +270,23 @@ func GenerateSnapshot() *cache.Snapshot {
 	snap, _ := cache.NewSnapshot("1",
 		map[resource.Type][]types.Resource{
 			resource.ClusterType: {
-				makeCluster("svc-a-110"), makeCluster("svc-a-108"), makeCluster("svc-a-107"),
-				makeCluster("svc-b-107"), makeCluster("svc-b-110"), makeCluster("svc-b-108"),
-				makeCluster("db-110"), makeCluster("db-108"), makeCluster("db-107")},
+				makeCluster("udp-jvb"),
+				makeCluster("udp-local"),
+				makeCluster("local-jvb"),
+				makeCluster("jicofo-jvb"),
+			},
 			// resource.RouteType:    {makeRoute(RouteName, ClusterName)},
 			resource.ListenerType: {
-				makeHTTPListener("listener-110", "svc-a-110", "svc-b-110", "db-110", "/db", 10729),
-				makeHTTPListener("listener-108", "svc-a-108", "svc-b-108", "db-108", "/", 10728),
-				makeHTTPListener("listener-107", "svc-a-107", "svc-b-107", "db-107", "/db", 10727)},
+				makeUDPListener("gw-udp", "udp-jvb", 10230),
+				makeUDPListener("jvb-udp", "udp-local", 10232),
+				makeHTTPListener("jicofo-http", "jicofo-jvb", 20231),
+				makeHTTPListener("jvb-http", "local-jvb", 20232),
+			},
 			resource.EndpointType: {
-				makeEndpoint("svc-a-110", "127.0.0.1", 10730),
-				makeEndpoint("svc-a-108", "10.214.96.110", 10729),
-				makeEndpoint("svc-a-107", "10.214.96.110", 10729),
-				makeEndpoint("svc-b-110", "10.214.96.108", 10728),
-				makeEndpoint("svc-b-108", "127.0.0.1", 20730),
-				makeEndpoint("svc-b-107", "10.214.96.108", 10728),
-				makeEndpoint("db-108", "127.0.0.1", 8000),
-				makeEndpoint("db-110", "10.214.96.108", 10728),
-				makeEndpoint("db-107", "10.214.96.108", 10728),
+				makeEndpoint("udp-jvb", "10.214.96.112", 10232, core.SocketAddress_UDP),
+				makeEndpoint("udp-local", "127.0.0.1", 10000, core.SocketAddress_UDP),
+				makeEndpoint("jicofo-jvb", "10.214.96.112", 20232, core.SocketAddress_TCP),
+				makeEndpoint("local-jvb", "127.0.0.1", 9900, core.SocketAddress_TCP),
 			},
 		},
 	)
